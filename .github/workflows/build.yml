@@ -136,7 +136,7 @@ jobs:
           find openwrt/bin/targets/x86/64 -maxdepth 1 -type f             \( -name '*combined*.img.gz' -o -name '*rootfs*.tar.gz'             -o -name '*.vdi' -o -name '*.vmdk' -o -name '*.qcow2'             -o -name '*.manifest' -o -name 'sha256sums' \)             -exec cp -v {} release/ \;
 
           # 输出插件 IPK，方便单独安装/排查。
-          find openwrt/bin/packages -type f             \( -name '*passwall*.ipk' -o -name '*adguardhome*.ipk'             -o -name '*ddns-go*.ipk' -o -name '*mosdns*.ipk'             -o -name '*wechatpush*.ipk' \)             -exec cp -v {} release/ \; || true
+          find openwrt/bin/packages -type f             \( -name '*passwall*.ipk' -o -name '*adguardhome*.ipk'             -o -name '*ddns-go*.ipk' -o -name '*mosdns*.ipk'             -o -name '*serverchan*.ipk' -o -name '*wechatpush*.ipk' \)             -exec cp -v {} release/ \; || true
 
           test -n "$(find release -maxdepth 1 -type f -name '*.img.gz' -print -quit)"
           cat > release/BUILD-INFO.txt <<EOF
