@@ -64,23 +64,43 @@ jobs:
           set -euxo pipefail
           cd openwrt
 
-          # Passwall 主程序及依赖；其余 LuCI 插件来自常用软件包 feed。
+          # Passwall 固定到 25.4.1 对应的上游提交，避免跟随 main 自动升级。
+          PASSWALL_LUCI_COMMIT="0799261a542e55bb4bbf6dac85803e22e344f7a2"
+          PASSWALL_PACKAGES_COMMIT="cd668cd468db68a6e5aad6d32f19ff7bd73a59e2"
+
           cat >> feeds.conf.default <<'EOF'
-          src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git
-          src-git passwall_luci https://github.com/Openwrt-Passwall/openwrt-passwall.git
           src-git kenzo https://github.com/kenzok8/openwrt-packages.git
           src-git small https://github.com/kenzok8/small.git
           EOF
 
           ./scripts/feeds update -a
+
+          # 清理其他 feed 中与 Passwall 专用依赖重复的旧包。
+          for pkg in chinadns-ng dns2socks geoview hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs sing-box tcping trojan-plus tuic-client v2ray-geodata v2ray-plugin xray-core xray-plugin; do
+            rm -rf "feeds/packages/net/$pkg"
+          done
+          rm -rf feeds/luci/applications/luci-app-passwall
           ./scripts/feeds install -a
+
+          # 删除第三方 feed 安装的同名链接，统一使用固定提交的上游源码。
+          mkdir -p package/passwall-packages package/passwall-luci
+          for pkg in luci-app-passwall chinadns-ng dns2socks geoview hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs sing-box tcping trojan-plus tuic-client v2ray-geodata v2ray-plugin xray-core xray-plugin; do
+            find package/feeds -type l -name "$pkg" -delete 2>/dev/null || true
+          done
+
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git package/passwall-packages
+          git -C package/passwall-packages checkout "$PASSWALL_PACKAGES_COMMIT"
+          git clone https://github.com/Openwrt-Passwall/openwrt-passwall.git package/passwall-luci
+          git -C package/passwall-luci checkout "$PASSWALL_LUCI_COMMIT"
+
+          echo "PASSWALL_VERSION=25.4.1" >> "$GITHUB_ENV"
+          echo "PASSWALL_LUCI_COMMIT=$PASSWALL_LUCI_COMMIT" >> "$GITHUB_ENV"
+          echo "PASSWALL_PACKAGES_COMMIT=$PASSWALL_PACKAGES_COMMIT" >> "$GITHUB_ENV"
 
           # 将用户维护的 OpenRung LuCI 插件和客户端打包源码纳入工作区。
           git clone --depth 1 https://github.com/mengxianbo/openwrt-openrung.git /tmp/openwrt-openrung
           mkdir -p package/openwrt-openrung
           cp -a /tmp/openwrt-openrung/package/. package/openwrt-openrung/
-
-          # 保存上游来源，供构建日志与发布说明追溯。
           echo "OPENRUNG_COMMIT=$(git -C /tmp/openwrt-openrung rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: 生成 x86_64 配置
@@ -101,18 +121,22 @@ jobs:
           grep -E 'CONFIG_PACKAGE_(luci-app-passwall|luci-app-adguardhome|luci-app-ddns-go|luci-app-mosdns|luci-app-wechatpush)=' .config || true
           cp .config ../config/build.config
 
-      - name: 核验 Passwall 版本
+      - name: 核验 Passwall 版本与源码提交
         run: |
           set -euxo pipefail
           cd openwrt
-          TARGET='git-25.079.56181-2930f8a'
-          FOUND="$(grep -RhsE '^(PKG_VERSION|PKG_SOURCE_VERSION)[[:space:]]*[:?+]?=' package feeds 2>/dev/null | grep -F "$TARGET" | head -n 1 || true)"
-          if [ -z "$FOUND" ]; then
-            echo "::error::未在当前 Passwall feed 中找到指定版本 $TARGET。为避免静默替换版本，停止编译。"
-            echo "请核对上游 Passwall feed/ref，再更新本仓库工作流。"
+          MAKEFILE="package/passwall-luci/luci-app-passwall/Makefile"
+          test -f "$MAKEFILE"
+          grep -q '^PKG_VERSION:=25.4.1$' "$MAKEFILE" || {
+            echo "::error::Passwall 版本不是 25.4.1，停止编译。"
+            grep -E '^PKG_(NAME|VERSION|RELEASE):=' "$MAKEFILE" || true
             exit 1
-          fi
-          echo "Passwall version matched: $FOUND"
+          }
+          test "$(git -C package/passwall-luci rev-parse HEAD)" = "0799261a542e55bb4bbf6dac85803e22e344f7a2"
+          test "$(git -C package/passwall-packages rev-parse HEAD)" = "cd668cd468db68a6e5aad6d32f19ff7bd73a59e2"
+          echo "Passwall LuCI version: 25.4.1"
+          echo "Passwall LuCI commit: $(git -C package/passwall-luci rev-parse HEAD)"
+          echo "Passwall packages commit: $(git -C package/passwall-packages rev-parse HEAD)"
 
       - name: 下载源码包
         run: |
@@ -145,7 +169,9 @@ jobs:
           OpenRung packaging commit: $OPENRUNG_COMMIT
           Target: x86_64 / generic
           Root filesystem partition target: 512 MB
-          Passwall requested version: git-25.079.56181-2930f8a
+          Passwall version: 25.4.1
+          Passwall LuCI commit: $PASSWALL_LUCI_COMMIT
+          Passwall packages commit: $PASSWALL_PACKAGES_COMMIT
           Included plugins: Passwall, AdGuardHome, OpenRung, DDNS-GO, MosDNS, WeChatPush
           Excluded: Lucky, WebRTC
           EOF
