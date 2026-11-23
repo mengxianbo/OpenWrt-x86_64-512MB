@@ -1,0 +1,434 @@
+
+name: 编译 OpenRung 插件 IPK
+
+on:
+  workflow_dispatch:
+    inputs:
+      openrung_ref:
+        description: "OpenRung git ref (tag/branch/commit)"
+        required: false
+        default: "main"
+  push:
+    paths:
+      - "package/**"
+      - "!package/luci-app-webrtc-guard/**"
+      - "README.md"
+
+permissions:
+  contents: write
+
+# Prevent older builds from overwriting the latest release assets.
+concurrency:
+  group: openrung-ipk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout packaging repository
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential file python3
+
+      - name: Set Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.5"
+          cache: false
+
+      - name: Checkout official OpenRung
+        env:
+          INPUT_REF: ${{ inputs.openrung_ref }}
+        run: |
+          set -eux
+          REF="${INPUT_REF:-main}"
+          git init upstream
+          git -C upstream remote add origin https://github.com/openrung/openrung.git
+          git -C upstream fetch --depth 1 origin "$REF"
+          git -C upstream checkout --detach FETCH_HEAD
+          COMMIT="$(git -C upstream rev-parse HEAD)"
+          echo "OPENRUNG_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          echo "OpenRung commit: $COMMIT"
+
+      - name: Build Linux amd64 client
+        working-directory: upstream
+        env:
+          CGO_ENABLED: "0"
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          set -eux
+          go version
+          go build \
+            -trimpath \
+            -tags 'with_utls,with_external_windivert' \
+            -ldflags='-s -w' \
+            -o ../openrung-client \
+            ./cmd/client
+          file ../openrung-client
+          test -s ../openrung-client
+
+      - name: Assemble OpenWrt IPK packages
+        run: |
+          set -eux
+
+          VERSION="0.1.0+${OPENRUNG_COMMIT:0:8}.${GITHUB_SHA:0:8}"
+
+          mkdir -p out \
+            work/client/usr/bin \
+            work/client/usr/libexec \
+            work/client/etc/config \
+            work/client/etc/init.d \
+            work/client/usr/share/openrung \
+            work/client/CONTROL \
+            work/luci/usr/share/licenses/luci-app-openrung \
+            work/luci/CONTROL
+
+          install -m 0755 openrung-client \
+            work/client/usr/libexec/openrung-client.bin
+
+          install -m 0755 \
+            package/openrung-client/openrung-client-wrapper \
+            work/client/usr/bin/openrung-client
+
+          install -m 0644 \
+            package/openrung-client/openrung.config \
+            work/client/etc/config/openrung
+
+          # Preserve user settings (enabled flag and custom proxy port) on upgrades.
+          printf '/etc/config/openrung\\n' > work/client/CONTROL/conffiles
+
+          install -m 0755 \
+            package/openrung-client/openrung.init \
+            work/client/etc/init.d/openrung
+
+          # opkg runs this after installation to register the init script.
+          install -m 0755 \
+            package/openrung-client/openrung.postinst \
+            work/client/CONTROL/postinst
+
+          mkdir -p work/client/usr/share/openrung
+
+          cp upstream/LICENSE \
+            work/client/usr/share/openrung/LICENSE
+
+          if [ -f upstream/THIRD_PARTY_NOTICES.md ]; then
+            cp upstream/THIRD_PARTY_NOTICES.md \
+              work/client/usr/share/openrung/THIRD_PARTY_NOTICES.md
+          else
+            echo "Missing upstream THIRD_PARTY_NOTICES.md" >&2
+            exit 1
+          fi
+
+          # Fill only distributor-specific placeholders in the packaged copy.
+          # The exact upstream source archive below remains byte-for-byte upstream.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          notice = Path("work/client/usr/share/openrung/THIRD_PARTY_NOTICES.md")
+          content = notice.read_text(encoding="utf-8")
+          content = re.sub(r"<add contact /\s*repo issues URL>", "https://github.com/mengxianbo/OpenWrt-x86_64-512MB/issues", content)
+          content = content.replace("<add public repo URL>", "https://github.com/openrung/openrung")
+          if "<add " in content:
+              raise SystemExit("Unresolved distributor placeholder remains in " + str(notice))
+          notice.write_text(content, encoding="utf-8")
+          PY
+          install -m 0644 DISTRIBUTION-NOTICE-ADDENDUM.md \
+            work/client/usr/share/openrung/DISTRIBUTION-NOTICE-ADDENDUM.md
+
+          # Publish immutable, exact source snapshots corresponding to this build.
+          git archive --format=tar.gz \
+            --prefix="openwrt-openrung-${GITHUB_SHA}/" \
+            "${GITHUB_SHA}" > "out/openwrt-openrung-source-${GITHUB_SHA}.tar.gz"
+
+          git -C upstream archive --format=tar.gz \
+            --prefix="openrung-${OPENRUNG_COMMIT}/" \
+            HEAD > "out/openrung-upstream-source-${OPENRUNG_COMMIT}.tar.gz"
+
+          cat > work/client/usr/share/openrung/SOURCE-INFO.txt <<EOF
+          OpenWrt OpenRung package source information
+
+          Packaging repository:
+          https://github.com/mengxianbo/OpenWrt-x86_64-512MB
+          Exact packaging source commit: ${GITHUB_SHA}
+          Exact packaging source archive:
+          https://github.com/mengxianbo/OpenWrt-x86_64-512MB/archive/${GITHUB_SHA}.tar.gz
+
+          OpenRung upstream:
+          https://github.com/openrung/openrung
+          Exact upstream source commit: ${OPENRUNG_COMMIT}
+          Exact upstream source archive:
+          https://github.com/openrung/openrung/archive/${OPENRUNG_COMMIT}.tar.gz
+
+          The installed client is built from the exact upstream commit above.
+          See LICENSE and THIRD_PARTY_NOTICES.md in this directory for license
+          texts, copyright notices, third-party attributions and additional terms.
+          EOF
+
+          cp LICENSE work/luci/usr/share/licenses/luci-app-openrung/LICENSE
+          cat > work/luci/usr/share/licenses/luci-app-openrung/SOURCE-INFO.txt <<EOF
+          LuCI package source:
+          https://github.com/mengxianbo/OpenWrt-x86_64-512MB
+          Exact packaging source commit: ${GITHUB_SHA}
+          Exact source archive:
+          https://github.com/mengxianbo/OpenWrt-x86_64-512MB/archive/${GITHUB_SHA}.tar.gz
+          License: GPL-3.0-or-later
+          EOF
+
+          cat > work/client/CONTROL/control <<EOF
+          Package: openrung-client
+          Version: ${VERSION}
+          Architecture: x86_64
+          Maintainer: OpenWrt OpenRung Community
+          License: GPL-3.0-or-later
+          Description: OpenRung CLI client for OpenWrt x86_64
+          EOF
+
+          mkdir -p work/luci/CONTROL
+          mkdir -p work/luci/usr/lib/lua/luci/controller
+          mkdir -p work/luci/usr/lib/lua/luci/model/cbi/openrung
+
+          install -m 0644 \
+            package/luci-app-openrung/controller.lua \
+            work/luci/usr/lib/lua/luci/controller/openrung.lua
+
+          install -m 0644 \
+            package/luci-app-openrung/openrung.lua \
+            work/luci/usr/lib/lua/luci/model/cbi/openrung/main.lua
+
+          cat > work/luci/CONTROL/control <<EOF
+          Package: luci-app-openrung
+          Version: ${VERSION}
+          Architecture: all
+          Maintainer: OpenWrt OpenRung Community
+          Depends: luci-base, openrung-client
+          License: GPL-3.0-or-later
+          Description: Chinese LuCI management page for OpenRung
+          EOF
+
+          cat > build_ipk.py <<'PY'
+          import sys
+          import tarfile
+          import tempfile
+          from pathlib import Path
+
+          def make_tar_gz(source, output, exclude_control=False):
+              source = Path(source)
+
+              with tarfile.open(
+                  output,
+                  "w:gz",
+                  format=tarfile.GNU_FORMAT
+              ) as tar:
+                  for path in sorted(source.rglob("*")):
+                      rel = path.relative_to(source)
+
+                      if exclude_control and rel.parts and rel.parts[0] == "CONTROL":
+                          continue
+
+                      tar.add(
+                          path,
+                          arcname="./" + str(rel),
+                          recursive=False
+                      )
+
+          def build(source, output):
+              source = Path(source)
+              output = Path(output).resolve()
+
+              with tempfile.TemporaryDirectory() as tmpdir:
+                  tmp = Path(tmpdir)
+
+                  make_tar_gz(
+                      source / "CONTROL",
+                      tmp / "control.tar.gz"
+                  )
+
+                  make_tar_gz(
+                      source,
+                      tmp / "data.tar.gz",
+                      exclude_control=True
+                  )
+
+                  (tmp / "debian-binary").write_text(
+                      "2.0\n",
+                      encoding="ascii"
+                  )
+
+                  # OpenWrt native IPK format:
+                  # gzip(tar(debian-binary, data.tar.gz, control.tar.gz))
+                  with tarfile.open(
+                      output,
+                      "w:gz",
+                      format=tarfile.GNU_FORMAT
+                  ) as tar:
+                      tar.add(
+                          tmp / "debian-binary",
+                          arcname="./debian-binary"
+                      )
+
+                      tar.add(
+                          tmp / "data.tar.gz",
+                          arcname="./data.tar.gz"
+                      )
+
+                      tar.add(
+                          tmp / "control.tar.gz",
+                          arcname="./control.tar.gz"
+                      )
+
+          build(sys.argv[1], sys.argv[2])
+          PY
+
+          python3 build_ipk.py \
+            work/client \
+            out/openrung-client_${VERSION}_x86_64.ipk
+
+          python3 build_ipk.py \
+            work/luci \
+            out/luci-app-openrung_${VERSION}_all.ipk
+
+          # Stable names for direct installation
+          cp out/openrung-client_${VERSION}_x86_64.ipk \
+            out/openrung-client_x86_64.ipk
+
+          cp out/luci-app-openrung_${VERSION}_all.ipk \
+            out/luci-app-openrung_all.ipk
+
+          cp out/*.ipk .
+
+          sha256sum ./*.ipk > SHA256SUMS
+
+          echo "PACKAGE_VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+          ls -lh ./*.ipk
+          cat SHA256SUMS
+
+      - name: Verify OpenWrt IPK packages
+        run: |
+          set -eux
+
+          sh -n package/openrung-client/openrung-client-wrapper
+          sh -n package/openrung-client/openrung.init
+          sh -n package/openrung-client/openrung.postinst
+
+          for pkg in \
+            openrung-client_${PACKAGE_VERSION}_x86_64.ipk \
+            luci-app-openrung_${PACKAGE_VERSION}_all.ipk
+          do
+            echo "===== Verify $pkg ====="
+
+            # Check outer gzip
+            gzip -t "$pkg"
+
+            # Check outer tar
+            tar -tzf "$pkg"
+
+            mkdir -p verify
+            tar -xzf "$pkg" -C verify
+
+            # Check IPK version
+            test "$(cat verify/debian-binary)" = "2.0"
+
+            # Check control archive
+            gzip -t verify/control.tar.gz
+            tar -tzf verify/control.tar.gz
+            tar -xOzf verify/control.tar.gz ./control
+
+            # Check data archive
+            gzip -t verify/data.tar.gz
+            tar -tzf verify/data.tar.gz
+
+            rm -rf verify
+          done
+
+          echo "All IPK packages verified successfully."
+
+          # Enforce license files and SPDX-style package metadata for future builds.
+          python3 - <<'PY'
+          import io
+          import tarfile
+          from pathlib import Path
+
+          def archive_members(blob):
+              with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as archive:
+                  return {
+                      member.name.removeprefix("./"): archive.extractfile(member).read()
+                      for member in archive.getmembers()
+                      if member.isfile()
+                  }
+
+          def inspect_ipk(path):
+              with tarfile.open(path, "r:gz") as outer:
+                  control_blob = outer.extractfile("./control.tar.gz").read()
+                  data_blob = outer.extractfile("./data.tar.gz").read()
+              return archive_members(control_blob), archive_members(data_blob)
+
+          checks = [
+              (
+                  Path(f"openrung-client_{__import__('os').environ['PACKAGE_VERSION']}_x86_64.ipk"),
+                  "usr/share/openrung/LICENSE",
+                  "openrung-client",
+              ),
+              (
+                  Path(f"luci-app-openrung_{__import__('os').environ['PACKAGE_VERSION']}_all.ipk"),
+                  "usr/share/licenses/luci-app-openrung/LICENSE",
+                  "luci-app-openrung",
+              ),
+          ]
+
+          for package, license_path, package_name in checks:
+              control, data = inspect_ipk(package)
+              metadata = control.get("control", b"").decode("utf-8", "replace")
+              if f"Package: {package_name}" not in metadata:
+                  raise SystemExit(f"FAIL: {package.name}: incorrect package metadata")
+              if "License: GPL-3.0-or-later" not in metadata:
+                  raise SystemExit(f"FAIL: {package.name}: License field missing or incorrect")
+              if license_path not in data or not data[license_path].strip():
+                  raise SystemExit(f"FAIL: {package.name}: embedded LICENSE missing or empty")
+              print(f"PASS: {package.name}: GPL-3.0-or-later metadata and embedded LICENSE verified")
+
+          client = checks[0][0]
+          _, client_data = inspect_ipk(client)
+          notices = client_data.get("usr/share/openrung/THIRD_PARTY_NOTICES.md", b"")
+          if not notices.strip():
+              raise SystemExit("FAIL: openrung-client: third-party notices missing or empty")
+          print("PASS: openrung-client: third-party notices verified")
+          PY
+
+      - name: Upload packages as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openrung-openwrt-ipk
+          path: |
+            *.ipk
+            SHA256SUMS
+            out/*-source-*.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+      # Release publishing is intentionally decoupled from builds.
+      # Build artifacts remain available in Actions; do not overwrite the
+      # stable openwrt-latest Release assets from an automatic build.
+      # Publish a reviewed, explicitly selected build through a separate
+      # controlled release process.
+
+      - name: 发布 OpenRung IPK 到 Releases
+        if: ${{ success() }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: openrung-ipk-${{ github.run_number }}
+          name: OpenRung 插件 IPK #${{ github.run_number }}
+          body: |
+            OpenRung x86_64 客户端与 LuCI 管理插件。
+            此构建与固件构建分开，适用于本仓库对应版本。
+          files: |
+            *.ipk
+            SHA256SUMS
+            out/*-source-*.tar.gz
+          fail_on_unmatched_files: true
