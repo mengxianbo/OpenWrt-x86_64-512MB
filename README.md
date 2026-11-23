@@ -15,7 +15,7 @@
 
 | 插件 | 说明 |
 |---|---|
-| Passwall | 按要求锁定/核对版本 `git-25.079.56181-2930f8a` |
+| Passwall | 固定使用上游版本 `25.4.1`，LuCI 与核心依赖均锁定到对应历史提交 |
 | AdGuardHome | DNS 广告与跟踪器过滤 |
 | OpenRung | 使用本账号维护的 OpenRung OpenWrt 打包项目 |
 | DDNS-GO | 动态域名解析 |
@@ -47,13 +47,12 @@
 
 ## Passwall 版本核验
 
-构建脚本会检查 Passwall LuCI 包源码版本。目标版本为：
+Passwall 固定使用上游 **25.4.1**，不跟随上游 `main` 自动升级：
 
-```
-git-25.079.56181-2930f8a
-```
+- LuCI 主程序提交：[`0799261a542e55bb4bbf6dac85803e22e344f7a2`](https://github.com/Openwrt-Passwall/openwrt-passwall/commit/0799261a542e55bb4bbf6dac85803e22e344f7a2)
+- 配套核心依赖提交：[`cd668cd468db68a6e5aad6d32f19ff7bd73a59e2`](https://github.com/Openwrt-Passwall/openwrt-passwall-packages/commit/cd668cd468db68a6e5aad6d32f19ff7bd73a59e2)
 
-如果上游 feed 当前版本与目标不一致，工作流会明确报错，而不是静默编译成其他版本。届时可在仓库的 `.github/workflows/build.yml` 中调整 Passwall 源码 ref/commit。
+工作流会核验 LuCI Makefile 中的 `PKG_VERSION:=25.4.1`，并核对两个源码提交 SHA。任何版本或提交不匹配都会停止构建，避免意外编译成新版。
 
 ## 手动触发参数
 
