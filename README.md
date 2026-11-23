@@ -22,7 +22,7 @@
 | MosDNS | DNS 分流与解析 |
 | WeChatPush | 微信推送 |
 
-另外保留系统基础 LuCI、防火墙、网络管理和常用诊断工具。
+另外保留系统基础 LuCI、防火墙、网络管理和常用诊断工具。微信推送包在 feed 中的实际包名为 `luci-app-serverchan`，界面功能为微信/Server酱推送。
 
 ### 明确排除
 
@@ -35,7 +35,7 @@
 2. 选择 **编译 OpenWrt x86_64 512MB**。
 3. 点击 **Run workflow**。
 4. 等待任务完成。
-5. 成功后打开 **Releases** 下载固件、IPK 软件包清单和 SHA256 校验文件。
+5. 固件成功后打开 **Releases** 下载固件、插件 IPK 和 SHA256 校验文件。OpenRung IPK 由单独的 **编译 OpenRung 插件 IPK** 工作流构建并发布。
 
 也支持向 main 分支推送工作流、配置或脚本变更后自动触发编译。
 
