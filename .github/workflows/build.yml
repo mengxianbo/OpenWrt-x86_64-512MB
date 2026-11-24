@@ -82,6 +82,34 @@ jobs:
           rm -rf feeds/luci/applications/luci-app-passwall
           ./scripts/feeds install -a
 
+          # OpenWrt 24.10.3 自带 Go 1.23.12；kenzo feed 的 ddns-go 6.18.0
+          # 已要求 Go 1.26，无法在该工具链下编译。固定到仍兼容 Go 1.23 的上游 v6.12.0，
+          # 保留 DDNS-GO 功能，不移除软件包，也不改变 LuCI/系统其他功能。
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          makefile = Path("feeds/kenzo/ddns-go/Makefile")
+          if not makefile.is_file():
+              raise SystemExit("错误：未找到 feeds/kenzo/ddns-go/Makefile")
+          content = makefile.read_text()
+          start = content.find("PKG_VERSION:=")
+          end = content.find("PKG_LICENSE_FILES:=", start)
+          if start < 0 or end < 0:
+              raise SystemExit("错误：DDNS-GO Makefile 结构与预期不符，停止构建")
+          pinned = """PKG_VERSION:=6.12.0
+          PKG_RELEASE:=1
+          PKG_SOURCE_PROTO:=git
+          PKG_SOURCE_URL:=https://github.com/jeessy2/ddns-go
+          PKG_SOURCE_VERSION:=9ad1065a72799cbaab51aaa811edde1c37af9264
+          PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+
+          """
+          content = content[:start] + pinned + content[end:]
+          makefile.write_text(content)
+          print("DDNS-GO pinned: v6.12.0 (Go 1.23.6 compatible)")
+          PY
+
           # 删除第三方 feed 安装的同名链接，统一使用固定提交的上游源码。
           mkdir -p package/passwall-packages package/passwall-luci
           for pkg in luci-app-passwall chinadns-ng dns2socks geoview hysteria ipt2socks microsocks naiveproxy shadowsocks-libev shadowsocks-rust shadowsocksr-libev simple-obfs sing-box tcping trojan-plus tuic-client v2ray-geodata v2ray-plugin xray-core xray-plugin; do
