@@ -108,6 +108,29 @@ jobs:
           content = content[:start] + pinned + content[end:]
           makefile.write_text(content)
           print("DDNS-GO pinned: v6.12.0 (Go 1.23.6 compatible)")
+
+          # small feed 的 MosDNS v5.3.4 依赖了高于 OpenWrt 24.10.3
+          # 自带 Go 1.23.12 的工具链。固定到上游 v5.3.3（Go 1.22），
+          # 保留 MosDNS 功能与原有包安装定义。
+          makefile = Path("feeds/small/mosdns/Makefile")
+          if not makefile.is_file():
+              raise SystemExit("错误：未找到 feeds/small/mosdns/Makefile")
+          content = makefile.read_text()
+          start = content.find("PKG_VERSION:=")
+          end = content.find("PKG_LICENSE:=", start)
+          if start < 0 or end < 0:
+              raise SystemExit("错误：MosDNS Makefile 结构与预期不符，停止构建")
+          pinned = """PKG_VERSION:=5.3.3
+          PKG_RELEASE:=15
+          PKG_SOURCE_PROTO:=git
+          PKG_SOURCE_URL:=https://github.com/IrineSistiana/mosdns
+          PKG_SOURCE_VERSION:=025823c1a5c9753c0e35f8b444b9e3c4472d37d1
+          PKG_SOURCE_SUBDIR:=$(PKG_NAME)-$(PKG_VERSION)
+
+          """
+          content = content[:start] + pinned + content[end:]
+          makefile.write_text(content)
+          print("MosDNS pinned: v5.3.3 (Go 1.22 compatible)")
           PY
 
           # 删除第三方 feed 安装的同名链接，统一使用固定提交的上游源码。
