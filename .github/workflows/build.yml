@@ -131,6 +131,14 @@ jobs:
           content = content[:start] + pinned + content[end:]
           makefile.write_text(content)
           print("MosDNS pinned: v5.3.3 (Go 1.22 compatible)")
+
+          # small feed 的 100-mosdns-update-dependencies.patch 是针对更新后的
+          # MosDNS 源码编写，会把 go.mod 强制升级到 Go 1.26，并且与 v5.3.3
+          # 的文件内容不匹配。仅跳过这个依赖升级补丁；保留其余功能补丁。
+          dependency_patch = Path("feeds/small/mosdns/patches/100-mosdns-update-dependencies.patch")
+          if dependency_patch.exists():
+              dependency_patch.unlink()
+              print("Skipped incompatible Go 1.26 dependency patch; kept other MosDNS patches")
           PY
 
           # 删除第三方 feed 安装的同名链接，统一使用固定提交的上游源码。
